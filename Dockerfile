@@ -1,7 +1,7 @@
-FROM node:lts-alpine
+FROM docker.io/node:lts-alpine
 
 WORKDIR /app
 COPY * .
 RUN yarn install --frozen-lockfile
 
-CMD [ "yarn start" ]
+CMD [ "-r", "ts-node/register", "-r", "dotenv/config", "index.ts" ]
