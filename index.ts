@@ -1,5 +1,14 @@
 import {App, GenericMessageEvent, LogLevel} from '@slack/bolt';
-import {Client, Intents, MessageOptions as DiscordMessageOptions, TextChannel, Webhook} from 'discord.js';
+import {
+  Channel,
+  Client,
+  GuildChannel,
+  Intents,
+  Message,
+  MessageOptions as DiscordMessageOptions,
+  TextChannel,
+  Webhook,
+} from 'discord.js';
 
 // region API Clients
 const slackClient = new App({
@@ -19,6 +28,7 @@ const discordChannelId = process.env.DISCORD_CHANNEL_ID as string;
 const slackChannelName = process.env.SLACK_CHANNEL_NAME as string;
 
 let discordWebhook: Webhook;
+let discordChannel: Channel;
 
 interface SlackProfile {
   username: string;
@@ -39,9 +49,27 @@ async function fetchSlackProfile(userId: string): Promise<SlackProfile> {
   }
 }
 
+async function cleanSlackMessages(message: GenericMessageEvent): Promise<string> {
+  const emoji = /:(.*?):/g.exec(message.text);
+  const emojiManager = (discordChannel as GuildChannel).guild.emojis;
+  let currentText = message!.text;
+  if (emoji) {
+    for (const e of emoji.slice(1)) {
+      let emojiObj = emojiManager.cache.find(x => x.name === e);
+      if (!emojiObj) {
+        emojiObj = (await emojiManager.fetch()).find(x => x.name === e);
+      }
+      if (emojiObj) {
+        currentText = currentText.replace(new RegExp(`:${e}:`), emojiObj.toString());
+      }
+    }
+  }
+  return currentText;
+}
+
 discordClient.on('ready', async () => {
   console.log(`Logged it to discord as ${discordClient.user?.tag}`);
-  const discordChannel = await discordClient.channels.fetch(discordChannelId);
+  discordChannel = await discordClient.channels.fetch(discordChannelId);
   discordClient.user.setPresence({activities: [{name: 'linking friends across ecosystems'}]});
   if (!(discordChannel instanceof TextChannel)) {
     console.error(`Discord channel ${discordChannelId} is not a text channel, unable to continue`);
@@ -56,7 +84,7 @@ discordClient.on('ready', async () => {
   console.log(`Webhook with id ${discordWebhook.id} and first part of token ${discordWebhook.token.substr(0, 10)}`);
 });
 
-discordClient.on('messageCreate', message => {
+discordClient.on('messageCreate', async message => {
   if (
     message.channelId == discordChannelId &&
     (message.member ?? message.author).id != message.webhookId &&
@@ -68,7 +96,6 @@ discordClient.on('messageCreate', message => {
     // console.log(`avatarURL: ${avatarURL}`, 'discord');
 
     const evenCleanerContent = message.cleanContent.replace(/<a?(:.*?:)\d+>/g, '$1');
-    message.attachments;
 
     slackClient.client.chat.postMessage({
       channel: slackChannelName,
@@ -83,11 +110,12 @@ discordClient.on('messageCreate', message => {
 slackClient.message(async ({message}) => {
   const typedMessage = message as GenericMessageEvent;
   if (!typedMessage.bot_id) {
+    const cleanedText = await cleanSlackMessages(typedMessage);
     const slackProfile = await fetchSlackProfile(typedMessage.user);
     discordWebhook.send({
       username: slackProfile.username + ' (Slack)',
       avatarURL: slackProfile.avatar_url,
-      content: typedMessage.text,
+      content: cleanedText,
     });
   }
 });
