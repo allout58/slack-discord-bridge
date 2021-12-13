@@ -1,14 +1,18 @@
-import {App, GenericMessageEvent, LogLevel} from '@slack/bolt';
+import {App, FileBlock, GenericMessageEvent, ImageBlock, KnownBlock, LogLevel} from '@slack/bolt';
+import axios from 'axios';
 import {
   Channel,
   Client,
   GuildChannel,
   Intents,
   Message,
+  MessageAttachment,
+  MessageEmbed,
   MessageOptions as DiscordMessageOptions,
   TextChannel,
   Webhook,
 } from 'discord.js';
+import {RawMessageAttachmentData} from 'discord.js/typings/rawDataTypes';
 
 // region API Clients
 const slackClient = new App({
@@ -28,7 +32,7 @@ const discordChannelId = process.env.DISCORD_CHANNEL_ID as string;
 const slackChannelName = process.env.SLACK_CHANNEL_NAME as string;
 
 let discordWebhook: Webhook;
-let discordChannel: Channel;
+let discordChannel: TextChannel;
 
 interface SlackProfile {
   username: string;
@@ -69,11 +73,13 @@ async function cleanSlackMessages(message: GenericMessageEvent): Promise<string>
 
 discordClient.on('ready', async () => {
   console.log(`Logged it to discord as ${discordClient.user?.tag}`);
-  discordChannel = await discordClient.channels.fetch(discordChannelId);
+  const c = await discordClient.channels.fetch(discordChannelId);
   discordClient.user.setPresence({activities: [{name: 'linking friends across ecosystems'}]});
-  if (!(discordChannel instanceof TextChannel)) {
+  if (!(c instanceof TextChannel)) {
     console.error(`Discord channel ${discordChannelId} is not a text channel, unable to continue`);
     process.exit();
+  } else {
+    discordChannel = c;
   }
   const currentWebhooks = await discordChannel.fetchWebhooks();
   discordWebhook = currentWebhooks.find(x => x.owner.id === discordClient.user.id);
@@ -97,30 +103,66 @@ discordClient.on('messageCreate', async message => {
 
     const evenCleanerContent = message.cleanContent.replace(/<a?(:.*?:)\d+>/g, '$1');
 
+    const blocks: KnownBlock[] = message.attachments
+      .map(x => {
+        if (x.contentType.includes('image')) {
+          return {type: 'image', image_url: x.url, alt_text: x.name} as ImageBlock;
+        }
+        return null;
+      })
+      .filter(x => !!x);
+
     slackClient.client.chat.postMessage({
       channel: slackChannelName,
       text: evenCleanerContent,
       // These two require the OAuth scope `chat:write.customize`
       username: displayName + ' (Discord)',
       icon_url: avatarURL as string | undefined,
+      blocks,
     });
   }
 });
 
 slackClient.message(async ({message}) => {
   const typedMessage = message as GenericMessageEvent;
-  if (!typedMessage.bot_id) {
-    const cleanedText = await cleanSlackMessages(typedMessage);
+  if (!typedMessage.bot_id && typedMessage.type === 'message') {
+    let cleanedText = await cleanSlackMessages(typedMessage);
     const slackProfile = await fetchSlackProfile(typedMessage.user);
+    // const attachments: MessageAttachment[] = [];
+    // const embeds: MessageEmbed[] = [];
+    // if (typedMessage.files) {
+    //   for (const file of typedMessage.files) {
+    //     if (file.mimetype.includes('image') && file.url_private) {
+    //       // console.log(file);
+
+    //       const att = new MessageAttachment(file.url_private, file.name, {
+    //         id: '1',
+    //       } as RawMessageAttachmentData);
+    //       attachments.push(att);
+    //       const e = new MessageEmbed()
+    //         .setImage(`attachment://${file.name}`)
+    //         .setThumbnail(file.thumb_1024 ?? file.thumb_720 ?? file.thumb_360 ?? file.thumb_64);
+    //       embeds.push(e);
+    //     }
+    //   }
+    // }
+    if (!cleanedText) {
+      console.warn('No text found, probably an image-only Slack message. Skipping');
+      cleanedText = '<Image only message>';
+    }
+    // console.log(embeds, attachments);
     discordWebhook.send({
       username: slackProfile.username + ' (Slack)',
       avatarURL: slackProfile.avatar_url,
       content: cleanedText,
+      // attachments,
+      // embeds,
     });
   }
 });
 
 (async () => {
+  console.log('=========== Starting Up ===========');
   await slackClient.start();
   console.log('Slack client started with socket mode');
   discordClient.login(process.env.DISCORD_BOT_TOKEN);
